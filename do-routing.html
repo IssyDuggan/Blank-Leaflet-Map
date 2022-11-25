@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="UTF-8">
+	<title>Routing</title>
+
+	<!-- Load Leaflet -->
+	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
+		integrity="sha256-kLaT2GOSpHechhsozzB+flnD+zUyjE2LlfWPgU04xyI=" crossorigin="" />
+	<script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"
+		integrity="sha256-WBkoXOwTeyKclOHuWtc+i2uENFpDZ9YPdf5Hf+D7ewM=" crossorigin=""></script>
+	<!-- NB: You need the API key from https://openrouteservice.org/ to open this page !!! -->
+	<script src='ORS_API_KEY.js'></script>
+	<style>
+		/* Style the map 
+            */
+		#map {
+			/* This is the dimensions of the map on the screen, you can set it in
+				 px (pixels) or % of the total screen size */
+			width: 100vw;
+			height: 100vh;
+		}
+
+		/* Style the table */
+		table {
+			margin-top: 10px;
+			font-family: sans-serif;
+			min-width: 800px;
+		}
+
+		/* Style the table header */
+		th {
+			background-color: #000000;
+			color: white;
+			padding: 3px;
+		}
+
+		/* Style the table cells */
+		td {
+			padding: 3px;
+		}
+
+		/* Style the table rows (only colours the even numbered rows in the table) */
+		tr:nth-child(even) {
+			background-color: #f2f2f2;
+		}
+	</style>
+</head>
+
+<body onload='initMap()'>
+
+	<!-- This is where the map will go -->
+	<div id='map'></div>
+
+	<!-- This is where the table of directions will go -->
+	<div id='directions'></div>
+
+	<script>
+
+		//setup global variables
+		let map, start, end, routeLayer;
+
+		/**
+		 * Initialise the Map
+		 */
+		function initMap() {
+
+			// creates a world map (centre where the equator crosses the GPM)
+			map = L.map('map').setView([0, 0], 1);
+
+			// this adds the basemap tiles to the map
+			L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+				attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors. Geocoding by <a href="https://nominatim.org">Nominatim</a>.Routing by <a href="https://openrouteservice.org/">OpenRouteService</a>'
+			}).addTo(map);
+
+			// geocode start location
+			makeRequest(getGeocodeURL("Manchester"), function (data) {
+				// record the start location and try to start routing
+				start = [data[0].lon, data[0].lat];
+				doRouting();
+			});
+
+			// geocode end location
+			makeRequest(getGeocodeURL("London"), function (data) {
+				// record the end location and try to start routing
+				end = [data[0].lon, data[0].lat];
+				doRouting();
+			});
+		}
+
+
+		/**
+		 * Generate and return a Nominatim geocoding URL for a given placename
+		 */
+		function getGeocodeURL(placename) {
+			return ["https://nominatim.openstreetmap.org/?format=json&limit=1&q=", placename].join("");
+		}
+
+
+		/**
+		 * Calculate the route between start and end global variables
+		 */
+		function doRouting() {
+
+			if (start && end) {
+
+				//construct a url out of the required options for OpenRouteService
+				var url = [
+
+					// these bits are fixed or imported from the start and variables above
+					'https://api.openrouteservice.org/directions?',
+					'api_key=', ORS_API_KEY,	// this is my API key - students need their own
+					'&coordinates=', start[0].toString(), ',', start[1].toString(), '%7C', end[0].toString(), ',', end[1].toString(),
+
+					// these are the options, a comprehensive list is available at: https://openrouteservice.org/dev/#/api-docs/directions/get
+					'&profile=', 'driving-car',
+					'&preference=', 'fastest',
+					'&format=', 'geojson',
+					'&units=', 'km',
+					'&geometry_format=', 'geojson'
+
+				].join("");	//join the array with no delimiter
+
+				// log the url that was constructed
+				//console.log(url);
+
+				// send the request to OpenRouteService, set callback
+				makeRequest(url, routeToMap);
+			}
+		}
+
+
+		/**
+		 * Make a request for JSON over HTTP, pass resulting text to callback when ready
+		 */
+		function makeRequest(url, callback) {
+
+			// Initialise the XMLHttpRequest object
+			var httpRequest = new XMLHttpRequest();
+
+			// Set an event listener for when the HTTP state changes
+			httpRequest.onreadystatechange = function () {
+
+				//if it works, parse the JSON and pass to the callback
+				//a successful HTTP request returns a state of DONE and a status of 200
+				if (httpRequest.readyState === XMLHttpRequest.DONE && httpRequest.status === 200) {
+					callback(JSON.parse(httpRequest.responseText));
+				}
+			};
+
+			//prepare and send the request
+			httpRequest.open('GET', url);
+			httpRequest.send();
+		}
+
+
+		/**
+		 * Retrieve a GeoJSON route and add it to the map
+		 */
+		function routeToMap(route) {
+
+			// load into L.GeoJson, style and add to the map
+			routeLayer = L.geoJson(route, {
+				style: {
+					weight: 4,
+					opacity: 1,
+					color: '#e60000',
+				}
+			}).addTo(map);
+
+			// zoom the map to fit
+			map.fitBounds(routeLayer.getBounds());
+
+			// add markers to the start and end (remember to flip longitude and latitude!)
+			markerStart = L.marker([start[1], start[0]]).addTo(map);
+			markerEnd = L.marker([end[1], end[0]]).addTo(map);
+
+			//console.log(route);
+
+			// get info about the route from the dataset
+			const duration = route.features[0].properties.summary[0].duration;
+			const distance = route.features[0].properties.summary[0].distance;
+
+			// get the description of the route
+			const segments = route.features[0].properties.segments;
+
+			// build HTML directions as a table
+			let directionsHTML = [
+				"<table><th>Directions (",
+				getDistanceString(distance),
+				", <i>",
+				getDurationString(duration),
+				"</i>)</th>"
+			].join("");
+
+			// loop through the description for each segment of the journey
+			for (var i = 0; i < segments.length; i++) {
+
+				// loop through each step of the current segment
+				for (var j = 0; j < segments[i].steps.length; j++) {
+
+					// add a direction to the table
+					directionsHTML += [
+						"<tr><td><b>",
+						segments[i].steps[j].instruction,
+						"</b> (",
+						getDistanceString(segments[i].steps[j].distance),
+						", <i>",
+						getDurationString(segments[i].steps[j].duration),
+						"</i>)</td></tr>"
+					].join("");
+				}
+			}
+
+			// close the table
+			directionsHTML += "</table>";
+
+			// load the directions into the div
+			document.getElementById('directions').innerHTML = directionsHTML;
+		}
+
+
+		/**
+		 * Returns a sensible distance string for a given distance in km
+		 */
+		function getDistanceString(distance) {
+
+			//is it more than 1km?
+			if (distance > 1) {
+
+				//if so, use km
+				return distance.toFixed(1) + "km";
+
+			} else {
+
+				// if not, use m
+				return Math.ceil(distance * 1000).toFixed(0) + "m";
+			}
+		}
+
+
+		/**
+		 * Returns a sensible duration string for a given duration in seconds
+		 */
+		function getDurationString(duration) {
+
+			// hours
+			if (duration > 3600) {
+
+				//return hours and minutes
+				return Math.floor(duration / 3600).toFixed(0) + " hrs " +
+					Math.ceil((duration % 3600) / 60).toFixed(0) + " mins";
+
+				// minutes
+			} else if (duration > 60) {
+
+				// minutes only
+				return Math.ceil(duration / 60).toFixed(0) + " mins";
+
+				// seconds
+			} else {
+
+				// seconds only
+				return Math.ceil(duration).toFixed(0) + " secs";
+			}
+		}
+	</script>
+</body>
+
+</html>
